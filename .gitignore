@@ -125,7 +125,7 @@ dmypy.json
 .pyre/
 
 # Data fold and files
-data/
+# data/
 *.pdf
 *.png
 
