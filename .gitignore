@@ -137,3 +137,4 @@ dask-worker-space/
 
 # macOS
 .DS_Store
+.virtual_documents/
