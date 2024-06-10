@@ -134,3 +134,7 @@ dask-worker-space/
 
 # SLURM
 *.out
+
+# macOS
+.DS_Store
+.virtual_documents/
