@@ -1,0 +1,282 @@
+---
+title: 'Getting Started with STM'
+author: "Brandon Stewart"
+date: "PPI Text Analysis Demo"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+# Introduction
+This uses a series of files available at: https://www.dropbox.com/scl/fi/sd0prr3d6furt6o0v0tbf/Stewart_Files.zip?rlkey=552n2o845pvgqazgkru69u229&dl=0
+
+## Preparation
+
+First, load some of the general packages.
+```{r warning=FALSE, message=FALSE}
+library(quanteda)
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(stm)
+library(data.table)
+library(readr) #function read_csv is a bit better than R's default read.csv
+
+```
+
+And load our data. 
+```{r message=FALSE}
+projects <- read_csv("projects_10k.csv")
+
+# remove paragraph divider tags from project texts
+projects[["Project Essay"]] <- gsub("<!--DONOTREMOVEESSAYDIVIDER-->","\n\n",projects[["Project Essay"]]) 
+new.stopwords <- c(c("school", "students"), stopwords("english"))
+```
+
+
+# Topic Models
+
+This section introduces the [Structural Topic Model (stm)](https://cran.r-project.org/web/packages/stm/index.html) package. Most of it is drawn directly from the [package's Vignette](https://cran.r-project.org/web/packages/stm/vignettes/stmVignette.pdf), which goes through these and other features in even greater depth. If you want to fit LDA models, I recommend the [lda](https://cran.r-project.org/web/packages/lda/) package for a quick fit and the [mallet](https://cran.r-project.org/web/packages/mallet/index.html) package for something more robust. 
+
+## Preprocessing Data
+
+We start by loading **stm** and the dataset.  The **textProcessor()** function will use the **tm** package's text processing tools to stem and remove stop words in the documents.  It will return the documents divided into the **documents**, **vocab**, and **meta** formats that we saw working with the poliblog5k sample.  Check ?textProcessor for options, as it allows you to change stemming options, alter the language used for stop word identification, or even pass in your own custom stop word list.
+
+```{r}
+projects$date <- as.numeric(projects$`Project Posted Date`)
+```
+
+```{r warning=F}
+# textProcessor defaults: removes stop words in english, stems words, removes words under 3 characters, puts everything to lower case
+processed.docs <- textProcessor(projects[["Project Essay"]], metadata = projects, customstopwords = new.stopwords)
+```
+As we saw above, we often want to remove the rarer words from our corpus so the algorithm can focus on words that occur in many different documents.  The **prepDocuments()** function will do that for us. The **plotRemoved** function will let us preview how many documents, words, and tokens we'll remove by setting the threshold number of documents to various levels.  
+```{r warning=F}
+# let's look at the first 500 documents
+plotRemoved(processed.docs$documents, lower.thresh = seq(1, 500, by = 5))
+```
+
+It looks like the majority of the words this trims out are removed at around a threshold of 100 documents.  We'll go with that.  
+
+**prepDocuments** will handle reindexing the vocabulary and the metadata as words are removed.  This is a royal pain to do by hand--shoulders of giants here.
+```{r}
+prepped.docs <- prepDocuments(processed.docs$documents, 
+                     processed.docs$vocab, 
+                     processed.docs$meta,
+                     lower.thresh = 5)
+```
+
+## Fitting a Structural Topic Model
+
+The **stm** function does the really heavy lifting, fitting a topic model to our data.  There are more advanced settings for altering the Bayesian prior or the initialization algorithms used, but I'm going to focus on just a handful of features in this lab.
+
+**K** sets the number of topics.  As covered in lecture choosing this is an important part of choosing a model.  
+
+Several of the options are worth mentioning/discussing here: 
+
+1. The overall *topic prevalence* (the percentage of a random document representing each possible topic) can be modeled as a function of covariates of the document.  Here, we use the **R** model specification idioms to make it dependent on the **School Metro Type** (rural, urban, suburban, town), **Project Grade Level Category** and a spline function of the date, **s(date)**, which will allow the overall topic prevalence to change over the course of time.  
+
+2. The **content =~** term would allow us to set a single categorical variable over which the word distibution of topics can be allowed to vary.  In this case, we might allow each of the six different authors to speak about the same topic using slightly different distributions of words. We're going to skip over this feature for this lab, but you can find out more about it in the various STM papers by Roberts et al.  If you do explore it, keep in mind that it can have very large impacts on your model and requires that each category for which you want to allow separate content estimates contain a fairly large number of documents.
+
+3. **max.em.its** tells **stm** the maximum number of iterations to use in the EM algorithm before giving up on it ever converging.
+
+4. **init.type="Spectral"** tells stm to initialize the EM algorithm using the spectral decomposition of the term co-ocurrence matrix.  The spectral initialization uses a deterministic algorithm to find the best starting point for STM's main EM algorithm.  In many of the computational and human-judged ways that we'd want to compare models, it tends to produce better models than a random initialization. 
+
+This takes a bit to load so we have included the fit model below. You can just skip this block and just run the next one.
+```{r message=F, eval=F}
+set.seed(12345)
+project.fit <- 
+  stm(prepped.docs$documents, 
+      prepped.docs$vocab, 
+      K = 100, # number of topics
+      prevalence =~ `School Metro Type` + s(date) + `Project Grade Level Category`,  
+      max.em.its = 75,
+      data = prepped.docs$meta, 
+      init.type = "Spectral")
+save(project.fit, file="project_fit_100.Rdata")
+```
+
+```{r}
+load("project_fit_100.Rdata")
+```
+
+## Model Overview
+
+The first step in exploring the topic model result is to see what's going on in the topics so that we can start to get a sense of what features in the corpus they might reflect.  
+
+Calling **plot.STM()** on the fit object will show us the topics and their relative shares at a glance. Let's plot the first 20 topics. 
+
+```{r}
+plot.STM(project.fit, topics=1:25)
+```
+
+### Content of Topics
+
+These three-word labels give us some insight into the model, but let's dig into the topics a bit deeper to better understand what they represent.  
+
+The **labelTopics** command will give us the top 7 words (by default) of each topic, using four different metrics for ranking the top words.  If we'd included a content covariate, then we'd need to call **sageLabels(un.fit)** to get the same information; it would average across the content groups to give both overall word lists for each topic and a word list for each content covariate category within each topic.
+
+Prob ranks words by their raw prevalence in the topic, frex takes the harmonic mean of raw prevalence and exclusivity. Score is taken from the **lda** package and lift comes out of the **textir** package. Each gives us a slightly different list of words. 
+
+```{r}
+labelTopics(project.fit, topics = 1:10, n = 10)
+```
+
+### Reading Representative Documents
+
+STM will also help us call up representative documents to read to make sure our topics mean what we think they mean.  The **findThoughts()** function will pull up the top *n* documents associated with each topic.
+
+```{r}
+doc.text <- prepped.docs$meta$`Project Essay`
+sample.docs <- findThoughts(project.fit, 
+                            texts = doc.text, 
+                            n = 1, 
+                            topics = c(1:3))
+# Topic 1: Books, Reading, Library
+sample.docs$docs[[1]]
+# Topic 2: Instrument, Play, Sound
+sample.docs$docs[[2]]
+```
+
+### Wordclouds
+
+As before, we can also use word clouds to get snapshot overviews of our topics. Pick a few topics that you find interesting. 
+
+```{r}
+stm::cloud(project.fit, topic=1, max.words = 50) 
+stm::cloud(project.fit, topic=10, max.words = 50)
+```
+
+### Comparing Topic Vocabularies
+
+It can also be illustrative to directly compare topics of interest in terms of their vocabulary to make sure that what we think are the distinguishing characteristic of each actually do distinguish them.  **plot.STM()** has a plot **type="perspectives"** that does exactly this.
+
+```{r}
+plot.STM(project.fit, type="perspectives", topics=c(1,2))
+```
+
+If we had run our model with a content covariate, then calling **plot.STM(..., type="perspectives")** with a single topic number would have let us see how different context categories talk about that topic differently.
+
+
+
+## Investigating Covariate/Topic Relationships with Topic Models
+
+**estimateEffect** and **plot.estimateEffect** are tools in STM for investigating how our topics relate to covariates of interest.  
+
+The first step is estimate model effects from our fit object.  The **estimateEffect** function takes a formula (we need to specify which topics as the outcome variable), the model fit to predict from, the meta data, and the type of uncertainty estimate to use.  The default uncertainty setting, "Global," incorporates topic proportion uncertainties into the displayed uncertainty estimates.  
+
+We'll run this using the same formula with which we fit the model so we can recover the school, grade level, and time dimensions.  Again we have saved a version just so you can load and go quickly if you like.
+
+```{r}
+library(stm)
+#reload the model from Day 2
+load("STMmodels.RData")
+```
+
+```{r,eval=F}
+fit.effects <- estimateEffect(1:20 ~ `School Metro Type` + s(date) + `Project Grade Level Category`, 
+                              project.fit, 
+                              meta = prepped.docs$meta, 
+                              uncertainty = "Global")
+save(fit.effects, file="fit_effects.RData")
+```
+
+```{r}
+load("fit_effects.RData")
+```
+### Binary Categories
+
+We could first get an overview of the topics on the urban-rural dimension.
+```{r}
+plot.estimateEffect(fit.effects, 
+                    covariate = "School Metro Type", 
+                    topics = c(1:20),
+                    model = project.fit, 
+                    method = "difference",
+                    cov.value1 = "urban", cov.value2 = "rural",
+                    xlab = "Rural <--------> Urban",
+                    main = "Effect of Rural vs. Urban",
+                    xlim = c(-.04, .02), 
+                    labeltype = "frex", # use stm's "frex" to rank top words
+                    n = 3, # only list the top 5 words
+                    verbose.labels = F, # labels get spammy with this T
+                    width = 35 # allow for longer label strings
+                    )
+```
+
+We can run a new **estimateEffect** to look at variation in just one topic by another variable. Note that we can use a different model in **estimateEffect** than we fit in **stm**.  That let's us look at how topic prevelance varies by a covariate, even if that covariate was not part of our model structure.
+
+```{r}
+funding.effects <- estimateEffect(1:10 ~ `Project Current Status`, 
+                              project.fit, 
+                              meta = prepped.docs$meta, 
+                              uncertainty = "Global")
+```
+
+```{r}
+plot.estimateEffect(funding.effects, 
+                    covariate = "Project Current Status", 
+                    topics = c(1:10),
+                    model = project.fit, 
+                    method = "difference",
+                    cov.value1 = "Fully Funded", cov.value2 = "Expired",
+                    xlab = "Expired <--------> Funded",
+                    main = "Topics and Funding Success",
+                    xlim = c(-.02, .01), 
+                    labeltype = "frex", # use stm's "frex" to rank top words
+                    n = 3, # only list the top 3 words,
+                    width = 35,
+                    verbose.labels = F)
+```
+
+### Continuous Covariates
+
+We can also plot against a continuous variable using **method = "continuous"**. Let's look at how our topics vary by the percentage of students on a free lunch program. 
+
+```{r}
+lunch.effects <- estimateEffect(c(6,3) ~ s(`School Percentage Free Lunch`), 
+                              project.fit, 
+                              meta = prepped.docs$meta, 
+                              uncertainty = "Global")
+```
+
+
+```{r}
+plot.estimateEffect(lunch.effects, 
+                    covariate = "School Percentage Free Lunch", 
+                    topics = c(6,3),
+                    model = project.fit, 
+                    method = "continuous",
+                    verbose.labels=F,
+                    labeltype = "frex")
+```
+
+We can also examine how topics change over time.
+
+```{r}
+date.effects <- estimateEffect(c(1,6,10) ~ s(`date`), 
+                              project.fit, 
+                              meta = prepped.docs$meta, 
+                              uncertainty = "Global")
+```
+
+```{r}
+plot.estimateEffect(date.effects, 
+                    covariate = "date", 
+                    topics = c(1,6,10),
+                    model = project.fit, 
+                    method = "continuous",
+                    verbose.labels=T)
+```
+
+Look for seasonal trends.  Which vary a little and which vary a lot?
+
+
