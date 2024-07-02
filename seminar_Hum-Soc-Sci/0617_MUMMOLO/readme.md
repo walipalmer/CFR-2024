@@ -1,0 +1,1 @@
+This code is used to analyze the file `sqf_data_sample.csv` which can be downloaded from [dropbox](https://www.dropbox.com/scl/fo/e8hgc612k5xndncz24vd4/ACin59xrcuHLaqD5p_XmAd8?rlkey=uf8xjcxb4nu8891ontyme7qwa&e=1&st=lluvzrad&dl=0).
